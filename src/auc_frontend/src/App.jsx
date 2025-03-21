@@ -95,8 +95,8 @@ function App() {
       
       await authClient.login({
         identityProvider: process.env.NODE_ENV === 'production'
-          ? 'https://identity.ic0.app'
-          : `http://be2us-64aaa-aaaaa-qaabq-cai.localhost:4943`,
+  ? 'https://identity.ic0.app'
+  : `http://br5f7-7uaaa-aaaaa-qaaca-cai.localhost:4943`,
         onSuccess: async () => {
           const identity = authClient.getIdentity();
           setIdentity(identity);
