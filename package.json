@@ -24,5 +24,8 @@
     "@dfinity/principal": "^2.3.0",
     "@dfinity/utils": "^2.11.0",
     "@nfid/identitykit": "^1.0.10"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.11"
   }
 }
