@@ -4,17 +4,18 @@ import './index.css';
 
 // Import your canister's interface
 import { idlFactory } from '../../declarations/auc_backend';
-import { ConnectWallet, useAuth } from "@nfid/identitykit/react";
+import { ConnectWallet, useAuth, useIdentity } from "@nfid/identitykit/react";
 import { auc_backend } from "../../declarations/auc_backend";
 
 function App() {
-  // Use ONLY the useAuth hook for identity management
-  const { user } = useAuth();
+  // Use both useAuth and useIdentity hooks
+  const { user, isConnecting, connect, disconnect } = useAuth();
+  const identity = useIdentity();
   
-  // const [actor, setActor] = useState(null);
   const [auctions, setAuctions] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null); // Remove the type annotation that uses 'state'
+  const [error, setError] = useState(null);
+  const [authenticatedActor, setAuthenticatedActor] = useState(null);
 
   // Form states
   const [newAuction, setNewAuction] = useState({
@@ -32,108 +33,64 @@ function App() {
   // Calculate isConnected based on user
   const isConnected = !!user;
 
-  // Log the principal ID when user changes
-  useEffect(() => {
-    if (user) {
-      console.log("Connected with principal:", user.principal.toText());
-      
-      
-      // First initialize the actor with the identity
-      initActor(user.identity);
-      console.log(user.identity,"aaaa")
-    
-    } else {
-      // Reset state when user disconnects
-      setAuctions([]);
-      console.log("User disconnected");
-    }
-  }, [user]);
-
-  // Initialize actor when user changes
-  useEffect(() => {
-    if (user) {
-      initActor(user.identity);
-    }
-  }, [user]);
-
-  // Initialize canister actor with identity
-  const initActor = async (identity) => {
+  // Fetch active auctions
+  const fetchAuctions = async (actorToUse = null) => {
     try {
       setLoading(true);
+      console.log("Starting fetchAuctions");
       
-      // Get the host based on environment
+      // Create a fresh agent and actor for each request to avoid stale delegations
       const host = process.env.NODE_ENV === 'production' 
         ? "https://ic0.app" 
         : 'http://localhost:4943';
-
-      console.log("Using host:", host);
       
-      const agent = HttpAgent.createSync({ 
-        identity, 
-        host,
-        fetch: window.fetch.bind(window) 
-      });
+      const canisterId = process.env.CANISTER_ID_AUC_BACKEND || 'bkyz2-fmaaa-aaaaa-qaaaq-cai';
+      
+      // If logged in, create authenticated actor, otherwise create anonymous actor
+      let agent;
+      let actor;
+      
+      if (isConnected && identity) {
+        console.log("Creating authenticated agent with identity");
+        agent = new HttpAgent({ 
+          identity,
+          host,
+          fetch: window.fetch.bind(window)
+        });
+        
+        console.log("Agent created with identity:", !!agent);
+      } else {
+        console.log("Creating anonymous agent");
+        agent = new HttpAgent({ 
+          host,
+          fetch: window.fetch.bind(window)
+        });
+        
+        console.log("Anonymous agent created:", !!agent);
+      }
       
       // For local development only
       if (process.env.NODE_ENV !== 'production') {
+        console.log("Fetching root key for local development");
         await agent.fetchRootKey();
+        console.log("Root key fetched");
       }
       
-      // Get canister ID
-      const canisterId = process.env.CANISTER_ID_AUC_BACKEND || 'bkyz2-fmaaa-aaaaa-qaaaq-cai';
-      console.log("Using canister ID:", canisterId);
+      // Create actor with this agent
+      console.log("Creating actor with agent");
+      actor = Actor.createActor(idlFactory, {
+        agent,
+        canisterId
+      });
       
-      console.log("Actor initialized with identity");
+      console.log("Actor created:", !!actor);
       
-      // Initial fetch of auctions
-      try {
-        const activeAuctions = await auc_backend.getActiveAuctions();
-        setAuctions(activeAuctions);
-        console.log("Fetched auctions:", activeAuctions.length);
-      } catch (err) {
-        console.error("Failed to fetch auctions:", err);
-      }
-      
-      setLoading(false);
-    } catch (error) {
-      console.error("Actor creation error:", error);
-      setError("Failed to connect to the Internet Computer: " + error.message);
-      setLoading(false);
-    }
-  };
-
-  // Fixed updateIdentity function
-  const updateIdentity = async () => {
-    try {
-      if (!user) {
-        console.error("No user identity available");
-        setError("Authentication failed: No user identity available");
-        return;
-      }
-      
-      console.log("Updating identity with principal:", user.principal.toText());
-      
-      // Update the agent's identity for the backend canister
-      Actor.agentOf(auc_backend).replaceIdentity(user.identity);
-      
-      console.log("Identity updated successfully");
-      
-      // Fetch auctions with the new identity
-      await fetchAuctions();
-      
-    } catch (error) {
-      console.error("Error updating identity:", error);
-      setError("Authentication failed: " + error.message);
-    }
-  };
-
-  // Fetch active auctions
-  const fetchAuctions = async () => {
-    try {
-      setLoading(true);
-      console.log("Fetching auctions...");
+      // Call getActiveAuctions on the actor
+      console.log("Calling getActiveAuctions");
       const activeAuctions = await auc_backend.getActiveAuctions();
+      console.log("getActiveAuctions call completed");
       console.log("Received auctions:", activeAuctions.length);
+      
       setAuctions(activeAuctions);
       setLoading(false);
     } catch (error) {
@@ -142,6 +99,78 @@ function App() {
       setLoading(false);
     }
   };
+
+  // Initial fetch of auctions when component mounts
+  useEffect(() => {
+    console.log("Component mounted - initial fetch of auctions");
+    fetchAuctions();
+  }, []);
+
+  // Initialize actor when identity changes
+  useEffect(() => {
+    console.log("Authentication state changed - user:", !!user, "identity:", !!identity);
+    
+    if (user && identity) {
+      console.log("Connected with principal:", user.principal.toText());
+      console.log("Identity available:", !!identity);
+      
+      try {
+        // Get the host based on environment
+        const host = process.env.NODE_ENV === 'production' 
+          ? "https://ic0.app" 
+          : 'http://localhost:4943';
+          
+        console.log("Using host:", host);
+        
+        // Get canister ID
+        const canisterId = process.env.CANISTER_ID_AUC_BACKEND || 'bkyz2-fmaaa-aaaaa-qaaaq-cai';
+        console.log("Using canister ID:", canisterId);
+        
+        // Create an agent with the identity from useIdentity
+        const agent = new HttpAgent({ 
+          identity,
+          host,
+          fetch: window.fetch.bind(window)
+        });
+        
+        console.log("Agent created successfully");
+        
+        // For local development only
+        if (process.env.NODE_ENV !== 'production') {
+          console.log("Fetching root key for local development");
+          agent.fetchRootKey().catch(e => {
+            console.error("Failed to fetch root key:", e);
+          });
+        }
+        
+        // Create a new actor with our authenticated agent
+        const actor = Actor.createActor(idlFactory, {
+          agent,
+          canisterId
+        });
+        
+        console.log("Created authenticated actor for canister calls");
+        
+        // Store the actor for later use
+        setAuthenticatedActor(actor);
+        
+        // Fetch auctions with the new authentication
+        fetchAuctions();
+      } catch (err) {
+        console.error("Error setting up agent:", err);
+        setError("Authentication error: " + err.message);
+      }
+    } else {
+      // Reset authenticated actor when user disconnects
+      setAuthenticatedActor(null);
+      
+      if (!user) {
+        console.log("User disconnected");
+      } else if (!identity) {
+        console.log("Identity not available");
+      }
+    }
+  }, [user, identity]);
 
   // Handle form input change for new auction
   const handleAuctionFormChange = (e) => {
@@ -156,8 +185,13 @@ function App() {
   const createAuction = async (e) => {
     e.preventDefault();
     
-    if (!auc_backend || !isConnected) {
+    if (!isConnected) {
       setError("Please connect your wallet first");
+      return;
+    }
+    
+    if (!authenticatedActor) {
+      setError("Authentication not complete. Please reconnect your wallet.");
       return;
     }
 
@@ -168,8 +202,8 @@ function App() {
       console.log("Creating auction with:", { title, description, duration, reservePrice });
       console.log("Using principal:", user.principal.toText());
       
-      // Create the auction
-      const auctionId = await auc_backend.createAuction(title, description, duration, reservePrice);
+      // Create the auction with our authenticated actor
+      const auctionId = await authenticatedActor.createAuction(title, description, duration, reservePrice);
       console.log("Auction created with ID:", auctionId);
       
       // Reset form
@@ -211,8 +245,13 @@ function App() {
   const placeBid = async (e) => {
     e.preventDefault();
     
-    if (!auc_backend || !isConnected) {
+    if (!isConnected) {
       setError("Please connect your wallet first");
+      return;
+    }
+    
+    if (!authenticatedActor) {
+      setError("Authentication not complete. Please reconnect your wallet.");
       return;
     }
 
@@ -224,7 +263,8 @@ function App() {
       const id = typeof auctionId === 'string' ? Number(auctionId) : auctionId;
       
       console.log("Placing bid:", { auctionId: id, amount });
-      const result = await auc_backend.placeBid(id, amount);
+      
+      const result = await authenticatedActor.placeBid(id, amount);
       console.log("Bid result:", result);
       
       if (result) {
@@ -250,15 +290,21 @@ function App() {
 
   // End an auction
   const endAuction = async (auctionId) => {
-    if (!auc_backend || !isConnected) {
+    if (!isConnected) {
       setError("Please connect your wallet first");
+      return;
+    }
+    
+    if (!authenticatedActor) {
+      setError("Authentication not complete. Please reconnect your wallet.");
       return;
     }
 
     try {
       setLoading(true);
       console.log("Ending auction:", auctionId);
-      const result = await auc_backend.endAuction(auctionId);
+      
+      const result = await authenticatedActor.endAuction(auctionId);
       console.log("End auction result:", result);
       
       if (result && result.length > 0) {
@@ -289,7 +335,44 @@ function App() {
   const isOwner = (auction) => {
     if (!user) return false;
     const userPrincipal = user.principal.toText();
-    return auction.owner.toText() === userPrincipal;
+    
+    // Fixed the toText method call (was totext)
+    try {
+      const ownerPrincipal = auction.owner.toText();
+      console.log("Comparing owner:", ownerPrincipal, "with current user:", userPrincipal);
+      return ownerPrincipal === userPrincipal;
+    } catch (error) {
+      console.error("Error checking ownership:", error);
+      return false;
+    }
+  };
+
+  // Handle wallet connection error
+  const handleConnectionError = () => {
+    setError("There was an error connecting to the NFID wallet. Please make sure the NFID extension is installed correctly.");
+  };
+
+  // Manual connect function
+  const handleManualConnect = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      
+      // Call the connect function from useAuth
+      await connect();
+      
+      // Check if identity is available
+      if (!identity && user) {
+        console.warn("Connected with user but no identity is available. Check IdentityKitProvider setup.");
+        setError("Connected, but identity is not available. Make sure IdentityKitProvider is configured correctly.");
+      }
+      
+      setLoading(false);
+    } catch (error) {
+      console.error("Manual connect failed:", error);
+      setError("Connect failed: " + error.message);
+      setLoading(false);
+    }
   };
 
   return (
@@ -297,8 +380,22 @@ function App() {
       <header>
         <h1>Vickrey Auction Platform</h1>
         <div className="auth-info">
-          {isConnected && <p>Logged in as: {user.principal.toText()}</p>}
-          <ConnectWallet />
+          {isConnected && (
+            <div>
+              <p>Logged in as: {user.principal.toText()}</p>
+              <p>Identity available: {identity ? "Yes" : "No"}</p>
+              <p>Actor initialized: {authenticatedActor ? "Yes" : "No"}</p>
+            </div>
+          )}
+          <ConnectWallet onError={handleConnectionError} />
+          {!isConnected && (
+            <button 
+              onClick={handleManualConnect} 
+              disabled={loading || isConnecting}
+            >
+              {isConnecting ? "Connecting..." : loading ? "Loading..." : "Connect Manually"}
+            </button>
+          )}
         </div>
       </header>
 
@@ -362,8 +459,8 @@ function App() {
               />
             </div>
             
-            <button type="submit" disabled={loading || !isConnected}>
-              {loading ? "Creating..." : "Create Auction"}
+            <button type="submit" disabled={loading || !isConnected || !authenticatedActor}>
+              {loading ? "Creating..." : !authenticatedActor ? "Authentication Required" : "Create Auction"}
             </button>
           </form>
         </section>
@@ -397,8 +494,8 @@ function App() {
               />
             </div>
             
-            <button type="submit" disabled={loading || !isConnected}>
-              {loading ? "Placing Bid..." : "Place Bid"}
+            <button type="submit" disabled={loading || !isConnected || !authenticatedActor}>
+              {loading ? "Placing Bid..." : !authenticatedActor ? "Authentication Required" : "Place Bid"}
             </button>
           </form>
         </section>
@@ -406,9 +503,18 @@ function App() {
 
       <section className="auctions-list">
         <h2>Active Auctions</h2>
-        <button onClick={fetchAuctions} disabled={loading || !auc_backend}>
-          {loading ? "Refreshing..." : "Refresh Auctions"}
-        </button>
+        <div className="auction-controls">
+          <button onClick={() => fetchAuctions()} disabled={loading}>
+            {loading ? "Refreshing..." : "Refresh Auctions"}
+          </button>
+          <div className="auction-status">
+            {isConnected ? (
+              <span className="status-connected">Logged in: {user.principal.toText().substring(0, 10)}...</span>
+            ) : (
+              <span className="status-anonymous">Not logged in</span>
+            )}
+          </div>
+        </div>
         
         {loading && !auctions.length ? (
           <p>Loading auctions...</p>
@@ -431,7 +537,7 @@ function App() {
                 {isConnected && isOwner(auction) && (
                   <button 
                     onClick={() => endAuction(auction.id)}
-                    disabled={loading}
+                    disabled={loading || !authenticatedActor}
                   >
                     End Auction
                   </button>
