@@ -242,51 +242,93 @@ function App() {
   };
 
   // Place a bid
-  const placeBid = async (e) => {
-    e.preventDefault();
-    
-    if (!isConnected) {
-      setError("Please connect your wallet first");
-      return;
-    }
-    
-    if (!authenticatedActor) {
-      setError("Authentication not complete. Please reconnect your wallet.");
-      return;
-    }
+const placeBid = async (e) => {
+  e.preventDefault();
+  
+  if (!isConnected) {
+    setError("Please connect your wallet first");
+    return;
+  }
+  
+  if (!identity) {
+    setError("Identity not available. Please reconnect your wallet.");
+    return;
+  }
 
-    try {
-      setLoading(true);
-      const { auctionId, amount } = bidForm;
-      
-      // Convert auctionId to a number if it's a string
-      const id = typeof auctionId === 'string' ? Number(auctionId) : auctionId;
-      
-      console.log("Placing bid:", { auctionId: id, amount });
-      
-      const result = await authenticatedActor.placeBid(id, amount);
-      console.log("Bid result:", result);
-      
-      if (result) {
-        // Reset form
-        setBidForm({
-          auctionId: '',
-          amount: ''
-        });
-        
-        // Fetch updated auctions
-        await fetchAuctions();
-      } else {
-        setError("Bid was not accepted. Please check auction status and bid amount.");
-      }
-      
-      setLoading(false);
-    } catch (error) {
-      console.error("Error placing bid:", error);
-      setError("Failed to place bid: " + error.message);
-      setLoading(false);
+  try {
+    setLoading(true);
+    const { auctionId, amount } = bidForm;
+    
+    // Convert auctionId to a number if it's a string
+    const id = typeof auctionId === 'string' ? Number(auctionId) : auctionId;
+    
+    console.log("Placing bid:", { auctionId: id, amount });
+    
+    // Create a fresh agent and actor for each bid request
+    const host = process.env.NODE_ENV === 'production' 
+      ? "https://ic0.app" 
+      : 'http://localhost:4943';
+    
+    const canisterId = process.env.CANISTER_ID_AUC_BACKEND || 'bkyz2-fmaaa-aaaaa-qaaaq-cai';
+    
+    // Create fresh agent with current identity
+    const agent = new HttpAgent({ 
+      identity,
+      host,
+      fetch: window.fetch.bind(window)
+    });
+    
+    // For local development only
+    if (process.env.NODE_ENV !== 'production') {
+      await agent.fetchRootKey();
     }
-  };
+    
+    // Create fresh actor with this agent
+    const freshActor = Actor.createActor(idlFactory, {
+      agent,
+      canisterId
+    });
+    
+    // Use the new actor instance for this specific call
+    const result = await freshActor.placeBid(id, amount);
+    console.log("Bid result:", result);
+    
+    if (result) {
+      // Reset form
+      setBidForm({
+        auctionId: '',
+        amount: ''
+      });
+      
+      // Fetch updated auctions
+      await fetchAuctions();
+    } else {
+      setError("Bid was not accepted. Please check auction status and bid amount.");
+    }
+    
+    setLoading(false);
+  } catch (error) {
+    console.error("Error placing bid:", error);
+    
+    // More detailed error handling
+    let errorMessage = "Failed to place bid";
+    
+    if (error.message && error.message.includes("Invalid delegation")) {
+      errorMessage = "Your session has expired. Please reconnect your wallet and try again.";
+      // Force disconnect to prompt for fresh connection
+      try {
+        await disconnect();
+      } catch (e) {
+        console.error("Error during disconnect:", e);
+      }
+    } else if (error.message) {
+      errorMessage += ": " + error.message;
+    }
+    
+    setError(errorMessage);
+    setLoading(false);
+  }
+};
 
   // End an auction
   const endAuction = async (auctionId) => {
@@ -388,14 +430,7 @@ function App() {
             </div>
           )}
           <ConnectWallet onError={handleConnectionError} />
-          {!isConnected && (
-            <button 
-              onClick={handleManualConnect} 
-              disabled={loading || isConnecting}
-            >
-              {isConnecting ? "Connecting..." : loading ? "Loading..." : "Connect Manually"}
-            </button>
-          )}
+          
         </div>
       </header>
 
